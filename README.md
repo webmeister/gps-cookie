@@ -11,10 +11,10 @@ Designed by Richard Haberkern.
 Project Files
 -------------
 
-- arduino » Default Arduino sketch that powers the GPS Cookie
-- firmware » ATmega328P HEX file
-- parts-bom » Parts List (BOM)
-- schematics » GPS Cookie schematics
+- [arduino](https://github.com/albertico/gps-cookie/tree/master/arduino) » Default Arduino sketch that powers the GPS Cookie
+- [firmware](https://github.com/albertico/gps-cookie/tree/master/firmware) » ATmega328P HEX file
+- [parts-list-bom](https://github.com/albertico/gps-cookie/tree/master/parts-list-bom) » Parts List (BOM)
+- [schematics](https://github.com/albertico/gps-cookie/tree/master/schematics) » GPS Cookie schematics
 
 License
 -------
