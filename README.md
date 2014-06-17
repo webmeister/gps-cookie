@@ -1,7 +1,7 @@
 GPS Cookie
 ==========
 
-An arduino compatible open-source GPS data logger that is ready to go.
+**An arduino compatible open-source GPS data logger that is ready to go.**
 
 Designed by Richard Haberkern.
 
@@ -16,5 +16,9 @@ Project Files
 - parts-bom » Parts List (BOM)
 - schematics » GPS Cookie schematics
 
+License
+-------
 
-**The GPS Cookie is an open source project.  Feel free to modify the design and use it any way you wish.**
+The GPS Cookie is an open source project.
+
+Feel free to modify the design and use it any way you wish.
