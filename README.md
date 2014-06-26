@@ -32,3 +32,8 @@ License
 
 The GPS Cookie is an open source project.  
 Feel free to modify the design and use it any way you wish.  
+
+Github compilation
+------------------
+
+Sketch, firmware, schematics and instructions compiled by **[Alberto A. Colón Viera](https://github.com/alberti_co)**.
