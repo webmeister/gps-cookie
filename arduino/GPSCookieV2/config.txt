@@ -1,0 +1,29 @@
+# debug logging
+# 0 = disabled
+# 1 = all received NMEA messages
+# 2 = + all sent NMEA messages
+# 3 = + all sent/received UBX messages
+debug = 0
+
+# power saving
+# 0 = ATmega Idle Mode, GPS Maximum Performance Mode (~95mA without fix, ~95mA with fix)
+# 1 = ATmega Idle Mode, GPS Eco Mode (~95mA without fix, ~70mA with fix)
+# 2 = ATmega Idle Mode, GPS Power Save Mode (~8mA without fix, ~70mA with fix)
+# 3 = ATmega Idle Mode, GPS Backup Mode (~8mA)
+# 4 = ATmega Power Down, GPS Off (~4mA, or <1mA with voltage regulator mod)
+power_saving = 0
+
+# log interval
+# seconds between log entries
+log_interval = 1
+
+# wait for fix
+# wait for the GPS to acquire a fix, when a point is to be logged
+# while in this mode the GPS will not be powered down, regardless of the power_saving setting
+# values below 15 may not be supported in all power_saving modes
+wait_for_fix = 600
+
+# list of messages that should be logged
+# RMC is always included and cannot be disabled
+# possible values: DTM,GBS,GGA,GLL,GRS,GSA,GST,GSV,VTG,ZDA
+messages = GGA,GSA

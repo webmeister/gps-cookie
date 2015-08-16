@@ -18,313 +18,234 @@
 
 #include <SD.h>
 #include <SPI.h>
-#include <SoftwareSerial.h>
+#include <alloca.h>
 #include <avr/power.h>
 #include <avr/sleep.h>
+#include <avr/wdt.h>
+#include "ubx_messages.h"
+
 
 #define PIN_GPS 2
 #define PIN_LED_RED 3
 #define PIN_LED_GREEN 4
+#define PIN_VOLTAGE 8
 #define PIN_SD 10
 
+#define CONFIG_POWERSAVE_ATMEGA_POWERDOWN 4
+#define CONFIG_POWERSAVE_GPS_OFF 3
 
 enum
 {
 	ERROR_SD_INITIALIZE = 1,
 	ERROR_SD_READ,
 	ERROR_SD_WRITE,
-	ERROR_GPS_STARTUP_COMMAND,
+	ERROR_GPS_CONFIG_FILE,
 };
 
 
-SoftwareSerial GPS(0, 1);
+// Configuration settings
+uint16_t debug = 0;
+uint16_t power_saving = 0;
+uint16_t log_interval = 1;
+uint16_t wait_for_fix = 600;
+char messages[11][4] = {"RMC", "GGA", "GSA", ""};
+
+// Internal state
 File logfile = File();
+bool gpsready = false;
+bool gpsinitialized = false;
 bool gpsfix = false;
 uint16_t utc_date = FAT_DEFAULT_DATE;
 uint16_t utc_time = FAT_DEFAULT_TIME;
+uint16_t power_saving_backup = 0;
+uint16_t wait_for_fix_backup = 0;
+uint16_t message_counter = 0;
+uint16_t message_counter_previous = 0;
+uint8_t min_messages = 1;
+long timeout_start = 0;
 
-
-static void signal_error(uint8_t error)
-{
-	while (true)
-	{
-		digitalWrite(PIN_LED_GREEN, LOW);
-		delay(500);
-
-		for (uint8_t i = 0; i < error; i++)
-		{
-			digitalWrite(PIN_LED_RED, HIGH);
-			delay(500);
-			digitalWrite(PIN_LED_RED, LOW);
-			delay(500);
-		}
-
-		digitalWrite(PIN_LED_GREEN, HIGH);
-		delay(500);
-	}
-}
-
-static char *find_field(char *buffer, uint8_t index)
-{
-	while (index)
-	{
-		if (*(buffer++) == ',')
-		{
-			index--;
-		}
-	}
-
-	return (*buffer != ',') ? buffer : NULL;
-}
-
-static inline uint8_t parse_digits(char *buffer)
-{
-	return (buffer[0] - '0') * 10 + (buffer[1] - '0');
-}
-
-static inline uint8_t parse_hex(char *buffer)
-{
-	return (buffer[0] - (isdigit(buffer[0]) ? '0' : '7')) * 16 + (buffer[1] - (isdigit(buffer[1]) ? '0' : '7'));
-}
-
-static char xor_buffer(char *buffer, uint8_t length)
-{
-	char result = 0;
-
-	while (length--)
-	{
-		result ^= *(buffer++);
-	}
-
-	return result;
-}
-
-static void file_date_time(uint16_t* date, uint16_t* time)
-{
-	*date = utc_date;
-	*time = utc_time;
-}
 
 void setup()
 {
+	// turn on voltage regulator
+	pinMode(PIN_VOLTAGE, OUTPUT);
+	digitalWrite(PIN_VOLTAGE, HIGH);
+
 	// configure LEDs
 	pinMode(PIN_LED_RED, OUTPUT);
 	pinMode(PIN_LED_GREEN, OUTPUT);
-	digitalWrite(PIN_LED_GREEN, HIGH);
+	digitalWrite(PIN_LED_RED, HIGH);
 
 	// disable unused peripherals to save power
 	ADCSRA = 0;
 	power_all_disable();
-
-	// enable necessary peripherals
 	power_timer0_enable();
 	power_spi_enable();
 	power_usart0_enable();
-	pinMode(PIN_SD, OUTPUT);
-	pinMode(PIN_GPS, OUTPUT);
-	digitalWrite(PIN_GPS, HIGH);
-
-#ifdef DEBUG
-	Serial.begin(9600);
-	Serial.println("GPS Cookie v2");
-#endif
 
 	// initialize SD card
+	pinMode(PIN_SD, OUTPUT);
 	SdFile::dateTimeCallback(file_date_time);
 	if (!SD.begin(PIN_SD))
 	{
 		signal_error(ERROR_SD_INITIALIZE);
 	}
 
+	// read config file
+	read_config();
+
 	// initialize GPS module
-	GPS.begin(9600);
-	File startup = SD.open("startup.txt", O_READ);
-	if (startup)
-	{
-		char buffer[256];
-		uint8_t mode = 0;
-		int16_t pos = 0;
-		int16_t size = startup.read(buffer, sizeof(buffer) - 4);
-
-		while (pos < size)
-		{
-			switch (mode)
-			{
-				case 0:
-				{
-					// looking for the start of a command
-					if (buffer[pos] == '$')
-					{
-						memmove(buffer, buffer + pos, size - pos);
-						size -= pos;
-						pos = 0;
-						mode = 1;
-						continue;
-					}
-					else if (!isspace(buffer[pos]))
-					{
-						mode = 2;
-					}
-					break;
-				}
-				case 1:
-				{
-					// looking for the end of a command
-					if (isspace(buffer[pos]))
-					{
-						if (pos < 3)
-						{
-							// not enough data -> skip garbage until next line
-							mode = 2;
-							continue;
-						}
-
-						if (buffer[pos - 3] != '*')
-						{
-							// add space for missing checksum
-							memmove(buffer + pos + 3, buffer + pos, size - pos - 1);
-							buffer[pos] = '*';
-							pos += 3;
-							size += 3;
-						}
-
-						// recalculate checksum
-						sprintf(buffer + pos - 2, "%02X", xor_buffer(buffer + 1, pos - 4));
-						buffer[pos] = 0;
-#ifdef DEBUG
-						Serial.println(buffer);
-#endif
-						GPS.println(buffer);
-						memmove(buffer, buffer + pos + 1, size - pos - 1);
-						size -= pos + 1;
-						pos = 0;
-						mode = 0;
-						continue;
-					}
-					break;
-				}
-				case 2:
-				{
-					// consuming garbage until the end of the line
-					if (buffer[pos] == '\r' || buffer[pos] == '\n')
-					{
-						mode = 0;
-					}
-					break;
-				}
-			}
-
-			pos++;
-
-			if (pos == size)
-			{
-				if (mode != 1)
-				{
-					pos = 0;
-					size = startup.read(buffer, sizeof(buffer) - 4);
-				}
-				else
-				{
-					signal_error(ERROR_GPS_STARTUP_COMMAND);
-				}
-			}
-		}
-
-		if (size < 0)
-		{
-			signal_error(ERROR_SD_READ);
-		}
-	}
-
-	digitalWrite(PIN_LED_GREEN, LOW);
+	pinMode(PIN_GPS, OUTPUT);
+	digitalWrite(PIN_GPS, HIGH);
+	Serial.begin(9600);
+	Serial.setTimeout(500);
 }
+
 
 void loop()
 {
-	// sleep until UART activity
-	set_sleep_mode(SLEEP_MODE_IDLE);
-	power_timer0_disable();
-	power_spi_disable();
-	sleep_enable();
-	sleep_mode();
-	sleep_disable();
-	power_spi_enable();
-	power_timer0_enable();
-
-	digitalWrite((gpsfix && logfile) ? PIN_LED_GREEN : PIN_LED_RED, HIGH);
-
-	while (GPS.available() && GPS.read() == '$')
+	if (!gpsready)
 	{
-		char buffer[128];
-		uint8_t index = 0;
-
-		// read entire message into buffer
-		buffer[index] = '$';
-		do
+		if (message_counter < 6)
 		{
-			if (index < sizeof(buffer) - 1)
-			{
-				index++;
-			}
-
-			while (!GPS.available()) ;
-
-			buffer[index] = GPS.read();
+			// wait for GPS module to start up
+			return;
 		}
-		while (buffer[index] != '\n');
-
-		// verify checksum
-		if (buffer[index - 4] != '*' || xor_buffer(buffer + 1, index - 5) != parse_hex(buffer + index - 3))
+		else
 		{
-			continue;
-		}
-
-		// parse interesting messages
-		if (strstr(buffer, "$GPRMC"))
-		{
-			char *status = find_field(buffer, 2);
-			gpsfix = (status && *status == 'A');
-
-			if (gpsfix)
-			{
-				char *time = find_field(buffer, 1);
-				char *date = find_field(buffer, 9);
-
-				if (date && time)
-				{
-					utc_date = FAT_DATE(2000 + parse_digits(date + 4), parse_digits(date + 2), parse_digits(date));
-					utc_time = FAT_TIME(parse_digits(time), parse_digits(time + 2), parse_digits(time + 4));
-
-					if (!logfile)
-					{
-						char filename[] = "20YYMMDD.log";
-						memcpy(filename + 2, date + 4, 2);
-						memcpy(filename + 4, date + 2, 2);
-						memcpy(filename + 6, date, 2);
-
-#ifdef DEBUG
-						Serial.println(filename);
-#endif
-
-						logfile = SD.open(filename, O_WRITE | O_APPEND | O_CREAT);
-					}
-				}
-			}
-		}
-
-		// write message to log file
-		if (gpsfix && logfile && logfile.write(buffer, index + 1) != index + 1)
-		{
-			signal_error(ERROR_SD_WRITE);
+			gpsready = true;
 		}
 	}
 
-	if (logfile)
+	if (!gpsinitialized)
 	{
-		logfile.flush();
+		gps_initialize();
+		return;
 	}
 
-	digitalWrite(PIN_LED_RED, LOW);
-	digitalWrite(PIN_LED_GREEN, LOW);
+	if ((int16_t)(message_counter - message_counter_previous) < min_messages && (signed long)(millis() - timeout_start) < 500)
+	{
+		// wait for more messages to arrive
+		return;
+	}
+
+	if (power_saving >= CONFIG_POWERSAVE_GPS_OFF && !gpsfix && wait_for_fix)
+	{
+		// reduce powersaving mode until we have a fix
+		power_saving_backup = power_saving;
+		power_saving = CONFIG_POWERSAVE_GPS_OFF - 1;
+		wait_for_fix_backup = wait_for_fix;
+	}
+	else if (power_saving_backup >= CONFIG_POWERSAVE_GPS_OFF)
+	{
+		if (!gpsfix && wait_for_fix)
+		{
+			// still no fix
+			wait_for_fix--;
+		}
+		else
+		{
+			// got a fix or giving up
+			wait_for_fix = wait_for_fix_backup;
+			wait_for_fix_backup = 0;
+			power_saving = power_saving_backup;
+			power_saving_backup = 0;
+		}
+	}
+
+	if (power_saving >= CONFIG_POWERSAVE_GPS_OFF)
+	{
+		// switch GPS to backup mode
+		UBX_RXM_PMREQ config = {log_interval * 1000, 2};
+		gps_send_ubx(0x02, 0x41, &config, sizeof(config));
+		Serial.flush();
+	}
+
+	if (power_saving >= CONFIG_POWERSAVE_GPS_OFF + 1)
+	{
+		// switch off peripherals to save even more power
+		digitalWrite(PIN_VOLTAGE, LOW);
+		digitalWrite(PIN_GPS, LOW);
+	}
+
+	if (power_saving < CONFIG_POWERSAVE_ATMEGA_POWERDOWN)
+	{
+		// sleep until UART activity
+		set_sleep_mode(SLEEP_MODE_IDLE);
+		power_timer0_disable();
+		power_spi_disable();
+		digitalWrite(PIN_LED_RED, LOW);
+		digitalWrite(PIN_LED_GREEN, LOW);
+
+		sleep_mode();
+
+		digitalWrite((gpsfix && logfile) ? PIN_LED_GREEN : PIN_LED_RED, HIGH);
+		power_spi_enable();
+		power_timer0_enable();
+	}
+	else
+	{
+		power_all_disable();
+		digitalWrite(PIN_LED_RED, LOW);
+		digitalWrite(PIN_LED_GREEN, LOW);
+
+		uint16_t sleep_counter = log_interval;
+		while (sleep_counter > 0)
+		{
+			if (sleep_counter >= 8)
+			{
+				wdt_enable(WDTO_8S);
+				sleep_counter -= 8;
+			}
+			else if (sleep_counter >= 4)
+			{
+				wdt_enable(WDTO_4S);
+				sleep_counter -= 4;
+			}
+			else if (sleep_counter >= 2)
+			{
+				wdt_enable(WDTO_2S);
+				sleep_counter -= 2;
+			}
+			else
+			{
+				wdt_enable(WDTO_1S);
+				sleep_counter -= 1;
+			}
+
+			WDTCSR |= (1 << WDIE);
+			set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+			sleep_mode();
+		}
+
+		digitalWrite((gpsfix && logfile) ? PIN_LED_GREEN : PIN_LED_RED, HIGH);
+
+		power_usart0_enable();
+		power_spi_enable();
+		power_timer0_enable();
+	}
+
+	message_counter_previous = message_counter;
+	timeout_start = millis();
+
+	if (power_saving >= CONFIG_POWERSAVE_GPS_OFF + 1)
+	{
+		// switch peripherals back on
+		digitalWrite(PIN_VOLTAGE, HIGH);
+		digitalWrite(PIN_GPS, HIGH);
+	}
+
+	if (power_saving >= CONFIG_POWERSAVE_GPS_OFF)
+	{
+		// GPS was off, so it has lost its fix
+		gpsfix = false;
+		// account for startup
+		timeout_start += 500;
+	}
 }
 
+
+ISR (WDT_vect)
+{
+	wdt_disable();
+}
